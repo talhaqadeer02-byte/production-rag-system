@@ -1,0 +1,13 @@
+Project Nebula: Next-Generation Cloud Architecture Overview
+
+1. Architectural Overview
+Project Nebula is an enterprise-grade hybrid cloud platform engineered to deliver sub-50ms latency across multi-region deployments. The core compute layer utilizes Kubernetes clusters orchestrated across AWS and on-premise bare-metal servers. Inter-service communication is governed by an Envoy-based service mesh with mutual TLS (mTLS) enforced across all endpoints.
+
+2. Data Storage and Ingestion
+Data ingestion pipelines process up to 120,000 events per second using Apache Kafka. Ingested events are routed to two primary stores: transactional state is managed by PostgreSQL with active-active replication, while analytical time-series logs are stored in ClickHouse. Data retention policies enforce 90-day cold storage archiving to AWS S3 Glacier.
+
+3. Security and Compliance
+Nebula implements role-based access control (RBAC) integrated with Okta OpenID Connect. All data at rest is encrypted using AES-256 with keys rotated every 30 days via HashiCorp Vault. The system undergoes quarterly SOC 2 Type II compliance audits and continuous vulnerability scans using Trivy.
+
+4. Performance and Disaster Recovery
+The Recovery Time Objective (RTO) is defined as under 5 minutes, with a Recovery Point Objective (RPO) of zero for financial transactions. Automated failover triggers if a regional health check fails 3 consecutive heartbeats over a 15-second window.

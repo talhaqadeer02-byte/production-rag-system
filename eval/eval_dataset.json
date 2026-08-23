@@ -1,0 +1,42 @@
+[
+  {
+    "question": "What is the target latency and deployment model for Project Nebula?",
+    "ground_truth": "Project Nebula is engineered to deliver sub-50ms latency across multi-region deployments using Kubernetes clusters orchestrated across AWS and on-premise bare-metal servers."
+  },
+  {
+    "question": "How are inter-service communications secured in the system?",
+    "ground_truth": "Inter-service communication is governed by an Envoy-based service mesh with mutual TLS (mTLS) enforced across all endpoints."
+  },
+  {
+    "question": "What is the maximum ingestion throughput and which message broker is used?",
+    "ground_truth": "The data ingestion pipeline processes up to 120,000 events per second using Apache Kafka."
+  },
+  {
+    "question": "Where are transactional states and analytical time-series logs stored?",
+    "ground_truth": "Transactional state is stored in PostgreSQL with active-active replication, while analytical time-series logs are stored in ClickHouse."
+  },
+  {
+    "question": "What is the cold storage retention policy and archive destination?",
+    "ground_truth": "Data retention policies enforce 90-day cold storage archiving to AWS S3 Glacier."
+  },
+  {
+    "question": "What identity and access control mechanism is implemented?",
+    "ground_truth": "Nebula implements role-based access control (RBAC) integrated with Okta OpenID Connect."
+  },
+  {
+    "question": "What encryption standard and key rotation schedule are used for data at rest?",
+    "ground_truth": "Data at rest is encrypted using AES-256 with encryption keys rotated every 30 days via HashiCorp Vault."
+  },
+  {
+    "question": "What compliance certifications and vulnerability scanners are utilized?",
+    "ground_truth": "The system undergoes quarterly SOC 2 Type II compliance audits and continuous vulnerability scans using Trivy."
+  },
+  {
+    "question": "What are the defined Recovery Time Objective (RTO) and Recovery Point Objective (RPO)?",
+    "ground_truth": "The Recovery Time Objective (RTO) is under 5 minutes, and the Recovery Point Objective (RPO) is zero for financial transactions."
+  },
+  {
+    "question": "Under what condition is automated regional failover triggered?",
+    "ground_truth": "Automated failover triggers if a regional health check fails 3 consecutive heartbeats over a 15-second window."
+  }
+]
