@@ -1,24 +1,42 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
 import os
+from dotenv import load_dotenv
+
 from src.pipeline import RAGPipeline
 
+load_dotenv()
+
 app = FastAPI(
-    title="Production RAG System API",
-    description="Enterprise RAG API featuring Hybrid Retrieval (BM25 + Dense Vector), Cross-Encoder Reranking, and Grounded Gemini Generation.",
+    title="Production Enterprise RAG API",
+    description="Hybrid RAG API with BM25 + Dense Retrieval, Cross-Encoder Reranking, and Gemini Grounded Generation.",
     version="1.0.0"
 )
 
-# Initialize pipeline once on server startup
-print("[API] Starting RAG Server...")
-pipeline = RAGPipeline(data_dir="data")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# --- Request & Response Models ---
+pipeline = None
+
+@app.on_event("startup")
+def startup_event():
+    global pipeline
+    print("[API] Initializing Production RAG Pipeline...")
+    pipeline = RAGPipeline("data")
+    print("[API] Pipeline ready!")
+
 class QueryRequest(BaseModel):
-    question: str = Field(..., example="What is the encryption standard and key rotation policy?")
-    retrieve_top_k: Optional[int] = Field(default=5, ge=1, le=20)
-    rerank_top_n: Optional[int] = Field(default=2, ge=1, le=10)
+    query: Optional[str] = None
+    question: Optional[str] = None
+    retrieve_top_k: Optional[int] = 5
+    rerank_top_n: Optional[int] = 2
 
 class Citation(BaseModel):
     source: str
@@ -31,32 +49,31 @@ class QueryResponse(BaseModel):
     citations: List[Citation]
     retrieved_context: Optional[List[str]] = None
 
-# --- API Endpoints ---
-@app.get("/health", tags=["Health"])
-def health_check():
-    """Returns the operational status of the service."""
-    return {
-        "status": "healthy",
-        "total_chunks_indexed": len(pipeline.chunks),
-        "generator_model": pipeline.generator.model_name
-    }
+@app.get("/")
+def root():
+    return {"message": "Production RAG API is operational", "docs": "/docs"}
 
-@app.post("/query", response_model=QueryResponse, tags=["RAG"])
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "service": "production-rag-system"}
+
+@app.post("/query", response_model=QueryResponse)
 def query_rag(request: QueryRequest):
-    """Executes end-to-end hybrid retrieval, reranking, and answer generation."""
-    if not request.question.strip():
-        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+    global pipeline
+    if not pipeline:
+        raise HTTPException(status_code=503, detail="RAG Pipeline not initialized.")
     
+    prompt = request.query or request.question
+    if not prompt or not prompt.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+        
     try:
         result = pipeline.query(
-            question=request.question,
-            retrieve_top_k=request.retrieve_top_k,
-            rerank_top_n=request.rerank_top_n
+            prompt.strip(),
+            top_k=request.retrieve_top_k or 5,
+            top_n=request.rerank_top_n or 2
         )
         return result
     except Exception as e:
+        print(f"[API Error] {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

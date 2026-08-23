@@ -1,49 +1,39 @@
-import os
-from typing import List, Dict
-from dotenv import load_dotenv
+from typing import List, Dict, Any
+try:
+    from sentence_transformers import CrossEncoder
+except ImportError:
+    CrossEncoder = None
 
-load_dotenv()
+class CrossEncoderReranker:
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        self.model = None
+        if CrossEncoder is not None:
+            try:
+                self.model = CrossEncoder(model_name)
+            except Exception as e:
+                print(f"[Reranker Warning] Model load failed ({e}), using pass-through ranking.")
+                self.model = None
 
-class Reranker:
-    def __init__(self):
-        self.cohere_api_key = os.getenv("COHERE_API_KEY")
-        self.use_cohere = bool(self.cohere_api_key and not self.cohere_api_key.startswith("your_"))
-        
-        if self.use_cohere:
-            import cohere
-            self.co_client = cohere.Client(self.cohere_api_key)
-            print("[Reranker] Using Cohere Rerank API.")
-        else:
-            from sentence_transformers import CrossEncoder
-            print("[Reranker] Using local Cross-Encoder model...")
-            self.local_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-
-    def rerank(self, query: str, chunks: List[Dict], top_n: int = 3) -> List[Dict]:
-        """Reranks retrieved candidate chunks to find the most relevant ones."""
-        if not chunks:
+    def rerank(self, query: str, candidates: List[Dict[str, Any]], top_n: int = 2) -> List[Dict[str, Any]]:
+        """Scores candidate chunks against the query using a Cross-Encoder."""
+        if not candidates:
             return []
-            
-        if self.use_cohere:
-            docs = [c["text"] for c in chunks]
-            response = self.co_client.rerank(
-                model="rerank-english-v3.0",
-                query=query,
-                documents=docs,
-                top_n=top_n
-            )
-            reranked = []
-            for item in response.results:
-                chunk = dict(chunks[item.index])
-                chunk["rerank_score"] = round(item.relevance_score, 4)
-                reranked.append(chunk)
-            return reranked
-        else:
-            pairs = [[query, c["text"]] for c in chunks]
-            scores = self.local_model.predict(pairs)
-            scored = []
-            for chunk, score in zip(chunks, scores):
-                c = dict(chunk)
-                c["rerank_score"] = round(float(score), 4)
-                scored.append(c)
-            scored.sort(key=lambda x: x["rerank_score"], reverse=True)
-            return scored[:top_n]
+
+        if self.model is None:
+            return [{"chunk": c, "score": 1.0} for c in candidates[:top_n]]
+
+        # Prepare (query, text) pairs for scoring
+        pairs = [[query, c.get("text", "")] for c in candidates]
+        scores = self.model.predict(pairs)
+
+        scored_candidates = [
+            {"chunk": chunk, "score": float(score)}
+            for chunk, score in zip(candidates, scores)
+        ]
+
+        # Rank descending by score
+        scored_candidates.sort(key=lambda x: x["score"], reverse=True)
+        return scored_candidates[:top_n]
+
+# Backward compatibility alias
+Reranker = CrossEncoderReranker
