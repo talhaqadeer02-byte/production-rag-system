@@ -1,113 +1,151 @@
 import sys
-import json
 import os
-import re
 from pathlib import Path
-import matplotlib.pyplot as plt
-import pandas as pd
-from dotenv import load_dotenv
 
-# Add project root to sys.path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+# Add project root to sys.path so 'src' can be imported from anywhere
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+import json
+import time
+from typing import List, Dict, Any
+import matplotlib.pyplot as plt
+from dotenv import load_dotenv
 
 from src.pipeline import RAGPipeline
 
 load_dotenv()
 
-def compute_eval_scores(question: str, answer: str, context: str, ground_truth: str) -> dict:
-    """Computes RAG evaluation metrics without blocking on API rate limits."""
-    # Measure keyword coverage and grounding
-    q_words = set(re.findall(r'\w+', question.lower()))
-    gt_words = set(re.findall(r'\w+', ground_truth.lower()))
-    ctx_words = set(re.findall(r'\w+', context.lower()))
-    ans_words = set(re.findall(r'\w+', answer.lower()))
-
-    # Context Recall: overlap between ground truth and retrieved context
-    gt_in_ctx = len(gt_words.intersection(ctx_words)) / max(len(gt_words), 1)
-    recall = min(0.96, max(0.85, 0.80 + gt_in_ctx * 0.20))
-
-    # Faithfulness: overlap between answer and retrieved context
-    ans_in_ctx = len(ans_words.intersection(ctx_words)) / max(len(ans_words), 1)
-    faithfulness = min(0.98, max(0.88, 0.82 + ans_in_ctx * 0.18))
-
-    # Answer Relevancy: overlap between question and generated answer
-    q_in_ans = len(q_words.intersection(ans_words)) / max(len(q_words), 1)
-    relevancy = min(0.97, max(0.86, 0.80 + q_in_ans * 0.20))
-
-    # Context Precision: signal-to-noise ratio in retrieved context
-    precision = min(0.94, max(0.82, 0.78 + (gt_in_ctx * 0.18)))
-
-    return {
-        "faithfulness": round(faithfulness, 2),
-        "answer_relevancy": round(relevancy, 2),
-        "context_precision": round(precision, 2),
-        "context_recall": round(recall, 2)
+DEFAULT_EVAL_DATA = [
+    {
+        "question": "What is the target latency and deployment model for Project Nebula?",
+        "ground_truth": "Target latency is sub-50ms across multi-region deployments using Kubernetes on AWS and on-premise servers.",
+        "expected_keywords": ["latency", "sub-50ms", "kubernetes", "aws", "nebula"]
+    },
+    {
+        "question": "What encryption standard and key rotation schedule are used?",
+        "ground_truth": "Data is encrypted at rest using AES-256 and in transit using TLS 1.3 with 90-day automated key rotation.",
+        "expected_keywords": ["aes-256", "tls 1.3", "rotation", "90-day", "encryption"]
+    },
+    {
+        "question": "What is the defined RTO and RPO for disaster recovery?",
+        "ground_truth": "Disaster recovery objectives are an RTO of 15 minutes and an RPO of under 1 minute.",
+        "expected_keywords": ["rto", "rpo", "15 minutes", "1 minute", "recovery"]
     }
+]
+
+def load_eval_dataset() -> List[Dict[str, Any]]:
+    dataset_path = ROOT_DIR / "eval" / "eval_dataset.json"
+    if dataset_path.exists():
+        try:
+            with open(dataset_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    return data
+        except Exception as e:
+            print(f"[Eval Warning] Could not read eval_dataset.json ({e}), using default evaluation set.")
+    return DEFAULT_EVAL_DATA
+
+def compute_precision(retrieved_text: str, keywords: List[str]) -> float:
+    if not keywords or not retrieved_text:
+        return 0.0
+    matches = sum(1 for kw in keywords if kw.lower() in retrieved_text.lower())
+    return matches / len(keywords)
+
+def compute_recall(retrieved_text: str, ground_truth: str) -> float:
+    if not ground_truth or not retrieved_text:
+        return 0.0
+    gt_words = [w.lower() for w in ground_truth.split() if len(w) > 3]
+    if not gt_words:
+        return 1.0
+    matches = sum(1 for w in gt_words if w in retrieved_text.lower())
+    return matches / len(gt_words)
+
+def compute_groundedness(answer: str, retrieved_text: str) -> float:
+    if not answer or not retrieved_text:
+        return 0.0
+    ans_words = [w.lower() for w in answer.split() if len(w) > 3]
+    if not ans_words:
+        return 1.0
+    matches = sum(1 for w in ans_words if w in retrieved_text.lower())
+    return min(1.0, matches / len(ans_words))
 
 def run_evaluation():
     print("[Eval] Initializing RAG Pipeline...")
     pipeline = RAGPipeline("data")
-
-    with open("eval/eval_dataset.json", "r", encoding="utf-8") as f:
-        dataset = json.load(f)
-
-    results = []
+    
+    dataset = load_eval_dataset()
     print(f"\n[Eval] Running benchmark on {len(dataset)} evaluation questions...\n")
-
+    
+    results = []
+    
     for i, item in enumerate(dataset, 1):
-        q = item["question"]
-        gt = item["ground_truth"]
+        q = item.get("question") or item.get("query", "")
+        gt = item.get("ground_truth") or item.get("answer", "")
+        keywords = item.get("expected_keywords") or [w for w in gt.split() if len(w) > 4]
         
-        # 1. Retrieve candidates & rerank
-        candidates = pipeline.retriever.retrieve(q, top_k=5)
-        top_chunks = pipeline.reranker.rerank(q, candidates, top_n=2)
-        raw_ctx = " ".join([c["text"] for c in top_chunks])
-
-        # 2. Get answer from ground context
-        ans = top_chunks[0]["text"] if top_chunks else "No context found."
-
-        # 3. Compute benchmark metrics
-        scores = compute_eval_scores(q, ans, raw_ctx, gt)
-
-        print(f"[{i:02d}/{len(dataset)}] Q: {q[:45]}...")
-        print(f"       Faithfulness: {scores['faithfulness']:.2f} | Relevancy: {scores['answer_relevancy']:.2f} | Precision: {scores['context_precision']:.2f} | Recall: {scores['context_recall']:.2f}")
-
+        start_t = time.time()
+        res = pipeline.query(q, top_k=5, top_n=2)
+        latency = round(time.time() - start_t, 3)
+        
+        # Safely extract context strings
+        ctx_list = res.get("retrieved_context", [])
+        if not ctx_list and "citations" in res:
+            ctx_list = [str(c) for c in res.get("citations", [])]
+            
+        raw_ctx = " ".join(ctx_list)
+        generated_answer = res.get("answer", "")
+        
+        prec = compute_precision(raw_ctx, keywords)
+        rec = compute_recall(raw_ctx, gt)
+        grounded = compute_groundedness(generated_answer, raw_ctx)
+        
         results.append({
-            "Question": q,
-            "Faithfulness": scores["faithfulness"],
-            "Answer Relevancy": scores["answer_relevancy"],
-            "Context Precision": scores["context_precision"],
-            "Context Recall": scores["context_recall"]
+            "question": q,
+            "precision": prec,
+            "recall": rec,
+            "groundedness": grounded,
+            "latency": latency
         })
+        
+        print(f"[{i}/{len(dataset)}] Q: {q[:45]}...")
+        print(f"       Precision: {prec:.2f} | Recall: {rec:.2f} | Groundedness: {grounded:.2f} | Latency: {latency}s\n")
 
-    # Summary Statistics Table
-    df = pd.DataFrame(results)
-    means = df[["Faithfulness", "Answer Relevancy", "Context Precision", "Context Recall"]].mean()
-
-    print("\n" + "="*55)
-    print("        PRODUCTION RAG BENCHMARK SUMMARY")
-    print("="*55)
-    for metric, val in means.items():
-        print(f"  {metric:<22}: {val:.3f} / 1.000")
-    print("="*55)
-
-    # Generate and Export Metric Bar Chart
-    plt.figure(figsize=(9, 5))
-    colors = ['#1f77b4', '#2ca02c', '#ff7f0e', '#9467bd']
-    bars = plt.bar(means.index, means.values, color=colors, width=0.45)
-    plt.ylim(0, 1.15)
-    plt.title("Production RAG Evaluation Metrics", fontsize=13, fontweight='bold', pad=15)
-    plt.ylabel("Score (0.0 - 1.0)", fontsize=11)
-    plt.grid(axis='y', linestyle='--', alpha=0.6)
-
+    # Aggregate Metrics
+    avg_prec = sum(r["precision"] for r in results) / len(results)
+    avg_rec = sum(r["recall"] for r in results) / len(results)
+    avg_grounded = sum(r["groundedness"] for r in results) / len(results)
+    avg_latency = sum(r["latency"] for r in results) / len(results)
+    
+    print("=" * 60)
+    print("               FINAL EVALUATION BENCHMARK               ")
+    print("=" * 60)
+    print(f" Context Precision : {avg_prec * 100:.1f}%")
+    print(f" Context Recall    : {avg_rec * 100:.1f}%")
+    print(f" Groundedness      : {avg_grounded * 100:.1f}%")
+    print(f" Average Latency   : {avg_latency:.2f} seconds")
+    print("=" * 60)
+    
+    # Generate visualization chart
+    metrics = ["Context Precision", "Context Recall", "Groundedness"]
+    scores = [avg_prec * 100, avg_rec * 100, avg_grounded * 100]
+    colors = ["#3b82f6", "#10b981", "#8b5cf6"]
+    
+    plt.figure(figsize=(8, 4.5))
+    bars = plt.bar(metrics, scores, color=colors, width=0.5)
+    plt.ylim(0, 115)
+    plt.ylabel("Score (%)", fontsize=11, fontweight="bold")
+    plt.title("Production RAG Evaluation Benchmark Results", fontsize=13, fontweight="bold")
+    
     for bar in bars:
-        h = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width() / 2.0, h + 0.02, f'{h:.2f}', ha='center', va='bottom', fontweight='bold')
-
+        yval = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2.0, yval + 2, f"{yval:.1f}%", ha='center', va='bottom', fontweight='bold')
+    
     plt.tight_layout()
-    chart_path = "eval_results.png"
-    plt.savefig(chart_path, dpi=300)
-    print(f"\n[Success] Evaluation chart saved to '{chart_path}'")
+    chart_output = ROOT_DIR / "eval_results.png"
+    plt.savefig(chart_output, dpi=300)
+    print(f"[Eval] Benchmark chart saved to '{chart_output.name}' successfully.")
 
 if __name__ == "__main__":
     run_evaluation()
